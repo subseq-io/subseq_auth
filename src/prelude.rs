@@ -4,7 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use email_address::EmailAddress;
-use openidconnect::{
+pub use openidconnect::{
     ClaimsVerificationError,
     core::{CoreIdToken, CoreIdTokenClaims},
 };
@@ -12,8 +12,9 @@ use serde::Serialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::oidc::OidcToken;
-use crate::user_id::UserId;
+pub use crate::group_id::GroupId;
+pub use crate::oidc::OidcToken;
+pub use crate::user_id::UserId;
 
 #[derive(Debug, Serialize)]
 #[non_exhaustive]
