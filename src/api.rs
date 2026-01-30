@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use crate::group_id::GroupId;
-use crate::prelude::{AuthenticatedUser, RejectReason, ValidatesIdentity};
+use crate::prelude::{AuthenticatedUser, GroupId, RejectReason, UserId, ValidatesIdentity};
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -24,19 +23,21 @@ pub trait HasPool {
 ///
 /// This allows the application to hook into user lifecycle events for logging, notifications, or
 /// additional processing.
+///
+/// Spawn a task or emit an event if you need async processing.
 pub trait AnnouncesUserEvents {
     fn announce_new_user(&self, user: &User);
-    fn announce_user_deactivation(&self, user_id: uuid::Uuid);
+    fn announce_user_deactivation(&self, user_id: UserId);
     fn announce_user_update(&self, user: &User);
-    fn announce_user_group_join(&self, user_id: uuid::Uuid, group_id: GroupId);
-    fn announce_user_group_leave(&self, user_id: uuid::Uuid, group_id: GroupId);
+    fn announce_user_group_join(&self, user_id: UserId, group_id: GroupId);
+    fn announce_user_group_leave(&self, user_id: UserId, group_id: GroupId);
 }
 
 pub trait AuthApp: ValidatesIdentity + HasPool + AnnouncesUserEvents {}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct User {
-    pub id: uuid::Uuid,
+    pub id: UserId,
     pub username: Option<String>,
     pub email: String,
     pub details: Option<Value>,
@@ -45,7 +46,7 @@ pub struct User {
 impl From<UserRow> for User {
     fn from(row: UserRow) -> Self {
         Self {
-            id: row.id,
+            id: UserId(row.id),
             username: row.username,
             email: row.email,
             details: row.details,
@@ -79,16 +80,15 @@ where
             .ok_or_else(|| RejectReason::bad_request("Email is required"))?;
 
         // Create a user record if it doesn't exist.
-        let new_user = UserRow::new(
-            auth_user.id(),
-            auth_user.username(),
-            email,
-            None,
-        );
+        let new_user = UserRow::new(auth_user.id(), auth_user.username(), email, None);
         UserRow::insert(&pool, &new_user)
             .await
             .map_err(|_| RejectReason::database("Failed to reach database"))?;
-        Ok(Json(User::from(new_user)))
+
+        let user = User::from(new_user.clone());
+        app.announce_new_user(&user);
+
+        Ok(Json(user))
     }
 }
 
@@ -108,7 +108,15 @@ where
     UserRow::set_details(&pool, auth_user.id(), details)
         .await
         .map_err(|_| RejectReason::database("Failed to reach database"))?;
-    Ok(StatusCode::NO_CONTENT)
+
+    let user_row = UserRow::get(&pool, auth_user.id())
+        .await
+        .map_err(|_| RejectReason::database("Failed to reach database"))?
+        .ok_or_else(|| RejectReason::not_found("User not found"))?;
+    let user = User::from(user_row);
+
+    app.announce_user_update(&user);
+    Ok(Json(user))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -197,12 +205,13 @@ where
     UserRow::deactivate(&pool, auth_user.id())
         .await
         .map_err(|_| RejectReason::database("Failed to reach database"))?;
+    app.announce_user_deactivation(auth_user.id());
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LeaveGroupContent {
-    pub group_id: String,
+    pub group_id: GroupId,
 }
 
 /// Allow the user to leave a group they are a member of.
@@ -218,11 +227,10 @@ where
     S: AuthApp + Clone + Send + Sync + 'static,
 {
     let pool = app.pool();
-    let group_id = uuid::Uuid::parse_str(&payload.group_id)
-        .map_err(|_| RejectReason::bad_request("Invalid group ID"))?;
-    GroupMembershipRow::remove_member(&pool, GroupId(group_id), auth_user.id())
+    GroupMembershipRow::remove_member(&pool, payload.group_id, auth_user.id())
         .await
         .map_err(|_| RejectReason::database("Failed to reach database"))?;
+    app.announce_user_group_leave(auth_user.id(), payload.group_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -235,8 +243,10 @@ where
         .with_same_site(SameSite::Lax) // Ensure we send the cookie from the OAuth redirect.
         .with_expiry(Expiry::OnInactivity(Duration::days(1)));
     Router::new()
-        .route("/auth/me", get(self_handler::<S>)
-            .put(self_update_handler::<S>))
+        .route(
+            "/auth/me",
+            get(self_handler::<S>).put(self_update_handler::<S>),
+        )
         .route("/auth/me/groups", get(self_groups_handler::<S>))
         .route("/auth/me/permissions", get(self_permissions_handler::<S>))
         .route("/auth/me/deactivate", post(self_deactivate_handler::<S>))
