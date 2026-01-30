@@ -124,10 +124,13 @@ impl AuthenticatedUser {
     pub async fn from_claims(token: CoreIdToken, claims: CoreIdTokenClaims) -> AnyResult<Self> {
         let user_id = Uuid::parse_str(claims.subject().as_str())
             .context("Failed to parse UUID from claims.subject()")?;
+        tracing::trace!("Claims: {:?}", claims);
 
         // Must include username and email
         let user_name = claims
             .preferred_username()
+            .map(|name| name.as_str())
+            .or(claims.email().map(|email| email.as_str()))
             .ok_or_else(|| anyhow!("No username in claims"))?;
         claims
             .email()
@@ -220,6 +223,8 @@ impl AuthenticatedUser {
     pub fn username(&self) -> Option<String> {
         self.claims
             .preferred_username()
+            .map(|name| name.as_str())
+            .or(self.claims.email().map(|email| email.as_str()))
             .map(|name| name.to_string())
     }
 
