@@ -217,26 +217,29 @@ impl AuthenticatedUser {
         UserId(self.id)
     }
 
-    pub fn username(&self) -> String {
-        // Guaranteed by `from_claims` that preferred_username is present
-        self.claims.preferred_username().unwrap().to_string()
+    pub fn username(&self) -> Option<String> {
+        self.claims
+            .preferred_username()
+            .map(|name| name.to_string())
     }
 
-    pub fn email(&self) -> String {
-        // Guaranteed by `from_claims` that email is present and valid
+    pub fn email(&self) -> Option<String> {
         let user_name = self.username();
         self.claims
             .email()
-            .map(|email| email.as_str())
+            .map(|email| email.to_string())
             .or_else(|| {
-                if EmailAddress::is_valid(&user_name) {
-                    Some(&user_name)
+                // If no email claim, check if username is a valid email
+                if let Some(user_name) = &user_name {
+                    if EmailAddress::is_valid(&user_name) {
+                        Some(user_name.to_owned())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
             })
-            .expect("No email in claims or username is not a valid email")
-            .to_string()
     }
 
     pub fn email_verified(&self) -> bool {
