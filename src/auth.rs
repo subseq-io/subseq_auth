@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future;
 use std::task::{Context, Poll};
@@ -24,7 +23,8 @@ use urlencoding::decode;
 
 use crate::oidc::{IdentityProvider, OidcToken};
 use crate::prelude::{
-    AuthRejectReason, AuthenticatedUser, MaybeAuthenticatedUser, RejectReason, ValidatesIdentity, validate_bearer,
+    AuthRejectReason, AuthenticatedUser, MaybeAuthenticatedUser, RejectReason, ValidatesIdentity,
+    validate_bearer,
 };
 
 pub const AUTH_COOKIE: &str = "access_token";
@@ -214,19 +214,6 @@ where
 #[derive(Deserialize)]
 pub struct RedirectQuery {
     pub origin: Option<String>,
-    pub extra: Option<String>,
-}
-
-fn parse_extra(extra_str: Option<String>) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    if let Some(extra) = extra_str {
-        for pair in extra.split(',') {
-            if let Some((k, v)) = pair.split_once('=') {
-                map.insert(k.to_string(), v.to_string());
-            }
-        }
-    }
-    map
 }
 
 pub async fn login(
@@ -234,15 +221,9 @@ pub async fn login(
     idp: &IdentityProvider,
     Query(query): Query<RedirectQuery>,
 ) -> Result<impl IntoResponse, RejectReason> {
-    let RedirectQuery { origin, extra } = query;
+    let RedirectQuery { origin } = query;
     let redirect_uri = origin.as_deref().unwrap_or("/");
-    let (mut auth_url, csrf_token, verifier, nonce) = idp.login_oidc(vec![String::from("email")]);
-    {
-        let mut query_pairs = auth_url.query_pairs_mut();
-        for (param, value) in parse_extra(extra).iter() {
-            query_pairs.append_pair(param, value);
-        }
-    }
+    let (auth_url, csrf_token, verifier, nonce) = idp.login_oidc(vec![String::from("email")]);
 
     session
         .insert("csrf_token", csrf_token.secret().clone())

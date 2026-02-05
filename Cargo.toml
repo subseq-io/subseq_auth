@@ -1,5 +1,5 @@
 [package]
-name = "axum_auth_user"
+name = "subseq_auth"
 version = "0.1.0"
 edition = "2024"
 

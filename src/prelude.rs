@@ -365,6 +365,7 @@ impl IntoResponse for RejectReason {
     fn into_response(self) -> Response {
         tracing::trace!("RejectReason: {:?}", self);
         match self {
+            RejectReason::Auth { reason } => reason.into_response(),
             RejectReason::BadRequest { reason } => (
                 StatusCode::BAD_REQUEST,
                 [(header::CONTENT_TYPE, "application/json")],
@@ -411,10 +412,35 @@ impl IntoResponse for AuthRejectReason {
     fn into_response(self) -> Response {
         tracing::trace!("AuthRejectReason: {:?}", self);
         match self {
-            _ => (
-                StatusCode::INTERNAL_SERVER_ERROR,
+            AuthRejectReason::CsrfMismatch => (
+                StatusCode::BAD_REQUEST,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&json!({"error": "An error occured"})).expect("valid json"),
+                serde_json::to_string(&json!({"error": "CSRF token mismatch"}))
+                    .expect("valid json"),
+            )
+                .into_response(),
+            AuthRejectReason::InvalidCredentials | AuthRejectReason::NoSessionToken => (
+                StatusCode::UNAUTHORIZED,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&json!({"error": "Unauthorized"})).expect("valid json"),
+            )
+                .into_response(),
+            AuthRejectReason::InvalidSessionToken { reason } => (
+                StatusCode::UNAUTHORIZED,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&json!({"error": reason})).expect("valid json"),
+            )
+                .into_response(),
+            AuthRejectReason::TokenTransferFailed { msg } => (
+                StatusCode::BAD_GATEWAY,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&json!({"error": msg})).expect("valid json"),
+            )
+                .into_response(),
+            AuthRejectReason::OidcError { msg } => (
+                StatusCode::BAD_GATEWAY,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&json!({"error": msg})).expect("valid json"),
             )
                 .into_response(),
         }
