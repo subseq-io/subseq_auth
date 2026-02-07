@@ -238,6 +238,11 @@ pub fn routes<S>(store: MemoryStore) -> Router<S>
 where
     S: AuthApp + Clone + Send + Sync + 'static,
 {
+    tracing::info!("Registering route /auth/me [GET,PUT]");
+    tracing::info!("Registering route /auth/me/groups [GET]");
+    tracing::info!("Registering route /auth/me/permissions [GET]");
+    tracing::info!("Registering route /auth/me/deactivate [POST]");
+    tracing::info!("Registering route /auth/me/leave [POST]");
     let layer = SessionManagerLayer::new(store)
         .with_secure(false)
         .with_same_site(SameSite::Lax) // Ensure we send the cookie from the OAuth redirect.
