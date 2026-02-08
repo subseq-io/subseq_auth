@@ -26,3 +26,5 @@ INSERT INTO auth.user_roles (user_id, scope, scope_id, role_name)
 SELECT user_id, 'global', 'global', role_name
 FROM auth.access_roles
 ON CONFLICT (user_id, scope, scope_id, role_name) DO NOTHING;
+
+DROP TABLE IF EXISTS auth.access_roles;

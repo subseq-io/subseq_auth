@@ -20,18 +20,6 @@ CREATE TABLE IF NOT EXISTS auth.access_roles (
 
 CREATE INDEX IF NOT EXISTS idx_auth_access_roles_user_id ON auth.access_roles (user_id);
 
-CREATE TABLE IF NOT EXISTS auth.user_roles (
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
-    scope TEXT NOT NULL,
-    scope_id TEXT NOT NULL,
-    role_name TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, scope, scope_id, role_name)
-);
-
-CREATE INDEX IF NOT EXISTS idx_auth_user_roles_user_scope
-    ON auth.user_roles (user_id, scope, scope_id);
-
 CREATE TABLE IF NOT EXISTS auth.groups (
     id UUID PRIMARY KEY,
     display_name TEXT NOT NULL UNIQUE,
@@ -41,18 +29,6 @@ CREATE TABLE IF NOT EXISTS auth.groups (
 );
 
 CREATE INDEX IF NOT EXISTS idx_auth_groups_display_name ON auth.groups (display_name);
-
-CREATE TABLE IF NOT EXISTS auth.group_roles (
-    group_id UUID REFERENCES auth.groups(id) ON DELETE CASCADE,
-    scope TEXT NOT NULL,
-    scope_id TEXT NOT NULL,
-    role_name TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (group_id, scope, scope_id, role_name)
-);
-
-CREATE INDEX IF NOT EXISTS idx_auth_group_roles_group_scope
-    ON auth.group_roles (group_id, scope, scope_id);
 
 CREATE TABLE IF NOT EXISTS auth.group_memberships (
     group_id UUID REFERENCES auth.groups(id) ON DELETE CASCADE,
