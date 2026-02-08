@@ -27,6 +27,31 @@ pub enum AuthRejectReason {
     NoSessionToken,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ApiErrorDetails {
+    MissingScopeCheck {
+        scope: String,
+        scope_id: String,
+        required_any_roles: Vec<String>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiErrorEnvelope {
+    pub error: ApiErrorBody,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiErrorBody {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<ApiErrorDetails>,
+}
+
 impl AuthRejectReason {
     pub fn oidc_error(msg: &'static str) -> Self {
         AuthRejectReason::OidcError { msg }
@@ -272,14 +297,36 @@ pub struct MaybeAuthenticatedUser(pub Option<AuthenticatedUser>);
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RejectReason {
-    Auth { reason: AuthRejectReason },
-    Anyhow { error: AnyhowError },
-    BadRequest { reason: String },
-    Conflict { resource: String },
-    DatabaseError { msg: String },
-    Forbidden { user_id: UserId, reason: String },
-    MissingEnvKey { key: String },
-    NotFound { resource: String },
+    Auth {
+        reason: AuthRejectReason,
+    },
+    Anyhow {
+        error: AnyhowError,
+    },
+    BadRequest {
+        reason: String,
+    },
+    Conflict {
+        resource: String,
+    },
+    DatabaseError {
+        msg: String,
+    },
+    Forbidden {
+        user_id: UserId,
+        reason: String,
+    },
+    ForbiddenDetailed {
+        code: String,
+        reason: String,
+        details: Option<ApiErrorDetails>,
+    },
+    MissingEnvKey {
+        key: String,
+    },
+    NotFound {
+        resource: String,
+    },
     Session,
 }
 
@@ -314,6 +361,35 @@ impl RejectReason {
         RejectReason::Forbidden {
             user_id,
             reason: reason.into(),
+        }
+    }
+
+    pub fn forbidden_detailed<S1: Into<String>, S2: Into<String>>(
+        code: S1,
+        reason: S2,
+        details: Option<ApiErrorDetails>,
+    ) -> Self {
+        RejectReason::ForbiddenDetailed {
+            code: code.into(),
+            reason: reason.into(),
+            details,
+        }
+    }
+
+    pub fn forbidden_missing_scope_check<S1: Into<String>, S2: Into<String>, S3: Into<String>>(
+        reason: S1,
+        scope: S2,
+        scope_id: S3,
+        required_any_roles: Vec<String>,
+    ) -> Self {
+        RejectReason::ForbiddenDetailed {
+            code: "missing_scope_check".to_string(),
+            reason: reason.into(),
+            details: Some(ApiErrorDetails::MissingScopeCheck {
+                scope: scope.into(),
+                scope_id: scope_id.into(),
+                required_any_roles,
+            }),
         }
     }
 
@@ -361,6 +437,27 @@ impl IntoResponse for AnyhowError {
     }
 }
 
+pub fn structured_error_response<S1: Into<String>, S2: Into<String>>(
+    status: StatusCode,
+    code: S1,
+    message: S2,
+    details: Option<ApiErrorDetails>,
+) -> Response {
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&ApiErrorEnvelope {
+            error: ApiErrorBody {
+                code: code.into(),
+                message: message.into(),
+                details,
+            },
+        })
+        .expect("valid json"),
+    )
+        .into_response()
+}
+
 impl IntoResponse for RejectReason {
     fn into_response(self) -> Response {
         tracing::trace!("RejectReason: {:?}", self);
@@ -387,6 +484,11 @@ impl IntoResponse for RejectReason {
                 )
                     .into_response()
             }
+            RejectReason::ForbiddenDetailed {
+                code,
+                reason,
+                details,
+            } => structured_error_response(StatusCode::FORBIDDEN, code, reason, details),
             RejectReason::NotFound { resource } => (
                 StatusCode::NOT_FOUND,
                 [(header::CONTENT_TYPE, "application/json")],
