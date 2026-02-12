@@ -2,9 +2,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::prelude::AuthRejectReason;
 use chrono::NaiveDateTime;
 use sqlx::PgPool;
-use crate::prelude::AuthRejectReason;
 
 /// An auth token that can be refreshed when expired.
 /// Use for OAuth tokens, etc.

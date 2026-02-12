@@ -3,13 +3,14 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
+use base64::{Engine as _, engine::general_purpose};
 use email_address::EmailAddress;
 pub use openidconnect::{
     ClaimsVerificationError,
     core::{CoreIdToken, CoreIdTokenClaims},
 };
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 pub use crate::group_id::GroupId;
@@ -141,6 +142,50 @@ pub fn validate_bearer<S: ValidatesIdentity>(
     } else {
         state.validate_bearer(&token)
     }
+}
+
+/// Read a custom claim from a token that has already been signature-verified.
+///
+/// This helper only decodes the JWT payload and does not perform verification.
+/// Call it with tokens returned by `validate_bearer` / `validate_token`.
+pub fn validated_token_claim_string(token: &CoreIdToken, claim_name: &str) -> Option<String> {
+    let payload = decode_jwt_payload(token)?;
+    let value = payload.get(claim_name)?;
+    match value {
+        Value::String(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Resolve machine caller client id from common token claim locations.
+pub fn workload_client_id(token: &CoreIdToken) -> Option<String> {
+    validated_token_claim_string(token, "client_id")
+        .or_else(|| validated_token_claim_string(token, "azp"))
+}
+
+fn decode_jwt_payload(token: &CoreIdToken) -> Option<Map<String, Value>> {
+    let token = token.to_string();
+    let mut segments = token.split('.');
+    let _header = segments.next()?;
+    let payload = segments.next()?;
+    let _signature = segments.next()?;
+    if segments.next().is_some() {
+        return None;
+    }
+
+    let decoded = general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| general_purpose::URL_SAFE.decode(payload))
+        .ok()?;
+    let value: Value = serde_json::from_slice(&decoded).ok()?;
+    value.as_object().cloned()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -293,6 +338,93 @@ impl AuthenticatedUser {
             .family_name()
             .and_then(|name| name.get(None))
             .map(|name| name.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use base64::{Engine as _, engine::general_purpose};
+    use openidconnect::core::CoreIdToken;
+    use serde_json::{Map, Value, json};
+
+    use super::{validated_token_claim_string, workload_client_id};
+
+    fn token_from_payload(payload: serde_json::Value) -> CoreIdToken {
+        let header = json!({
+            "alg": "RS256",
+            "typ": "JWT",
+        });
+        let mut base_claims = Map::new();
+        base_claims.insert(
+            "iss".to_string(),
+            Value::String("https://issuer.example.com".to_string()),
+        );
+        base_claims.insert("sub".to_string(), Value::String("subject".to_string()));
+        base_claims.insert("aud".to_string(), json!(["readysetapp"]));
+        base_claims.insert("iat".to_string(), json!(1_700_000_000_i64));
+        base_claims.insert("exp".to_string(), json!(1_900_000_000_i64));
+
+        if let Some(additional_claims) = payload.as_object() {
+            for (key, value) in additional_claims {
+                base_claims.insert(key.clone(), value.clone());
+            }
+        }
+
+        let payload = Value::Object(base_claims);
+        let header = general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).expect("header should serialize"));
+        let payload = general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).expect("payload should serialize"));
+        let signature = general_purpose::URL_SAFE_NO_PAD.encode("signature");
+        let token = format!("{header}.{payload}.{signature}");
+        CoreIdToken::from_str(&token).expect("token should parse")
+    }
+
+    #[test]
+    fn validated_token_claim_string_reads_custom_claim() {
+        let token = token_from_payload(json!({
+            "iss": "https://issuer.example.com",
+            "sub": "subject",
+            "client_id": "client-app-a",
+        }));
+
+        assert_eq!(
+            validated_token_claim_string(&token, "client_id"),
+            Some("client-app-a".to_string())
+        );
+    }
+
+    #[test]
+    fn validated_token_claim_string_rejects_non_string_claims() {
+        let token = token_from_payload(json!({
+            "iss": "https://issuer.example.com",
+            "sub": "subject",
+            "client_id": ["client-app-a"],
+        }));
+
+        assert_eq!(validated_token_claim_string(&token, "client_id"), None);
+    }
+
+    #[test]
+    fn workload_client_id_prefers_client_id_and_falls_back_to_azp() {
+        let from_client_id = token_from_payload(json!({
+            "client_id": "client-app-a",
+            "azp": "client-app-b",
+        }));
+        assert_eq!(
+            workload_client_id(&from_client_id),
+            Some("client-app-a".to_string())
+        );
+
+        let from_azp = token_from_payload(json!({
+            "azp": "client-app-b",
+        }));
+        assert_eq!(
+            workload_client_id(&from_azp),
+            Some("client-app-b".to_string())
+        );
     }
 }
 

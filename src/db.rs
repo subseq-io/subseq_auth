@@ -365,7 +365,8 @@ impl AccessRoleRow {
     }
 
     pub async fn roles(pool: &PgPool, user_id: UserId) -> Result<Vec<Self>, sqlx::Error> {
-        let rows = UserRoleRow::roles_in_scope(pool, user_id, GLOBAL_SCOPE, GLOBAL_SCOPE_ID).await?;
+        let rows =
+            UserRoleRow::roles_in_scope(pool, user_id, GLOBAL_SCOPE, GLOBAL_SCOPE_ID).await?;
         Ok(rows
             .into_iter()
             .map(|row| Self {
@@ -631,7 +632,14 @@ impl RoleAssignmentTarget {
 }
 
 pub async fn is_super_admin(pool: &PgPool, user_id: UserId) -> Result<bool, sqlx::Error> {
-    UserRoleRow::has_role(pool, user_id, GLOBAL_SCOPE, GLOBAL_SCOPE_ID, SUPER_ADMIN_ROLE).await
+    UserRoleRow::has_role(
+        pool,
+        user_id,
+        GLOBAL_SCOPE,
+        GLOBAL_SCOPE_ID,
+        SUPER_ADMIN_ROLE,
+    )
+    .await
 }
 
 pub async fn user_is_group_admin_for_scope(

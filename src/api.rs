@@ -13,8 +13,8 @@ use time::Duration;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
 use crate::db::{
-    AccessRoleRow, GroupMembershipRow, GroupRoleRow, GroupRow, LogRow, RoleAssignmentTarget,
-    UserRoleRow, UserRow, GLOBAL_SCOPE, GLOBAL_SCOPE_ID, SUPER_ADMIN_ROLE,
+    AccessRoleRow, GLOBAL_SCOPE, GLOBAL_SCOPE_ID, GroupMembershipRow, GroupRoleRow, GroupRow,
+    LogRow, RoleAssignmentTarget, SUPER_ADMIN_ROLE, UserRoleRow, UserRow,
     can_manage_role_assignment, grant_role_assignment_with_audit, is_super_admin,
     revoke_role_assignment_with_audit, user_is_group_admin_for_scope,
 };
@@ -316,30 +316,26 @@ where
     }
 
     let changed = match kind {
-        RoleMutationKind::Grant => {
-            grant_role_assignment_with_audit(
-                &pool,
-                actor_user_id,
-                payload.target.assignment_target(),
-                scope,
-                scope_id,
-                role_name,
-            )
-            .await
-            .map_err(|_| RejectReason::database("Failed to reach database"))?
-        }
-        RoleMutationKind::Revoke => {
-            revoke_role_assignment_with_audit(
-                &pool,
-                actor_user_id,
-                payload.target.assignment_target(),
-                scope,
-                scope_id,
-                role_name,
-            )
-            .await
-            .map_err(|_| RejectReason::database("Failed to reach database"))?
-        }
+        RoleMutationKind::Grant => grant_role_assignment_with_audit(
+            &pool,
+            actor_user_id,
+            payload.target.assignment_target(),
+            scope,
+            scope_id,
+            role_name,
+        )
+        .await
+        .map_err(|_| RejectReason::database("Failed to reach database"))?,
+        RoleMutationKind::Revoke => revoke_role_assignment_with_audit(
+            &pool,
+            actor_user_id,
+            payload.target.assignment_target(),
+            scope,
+            scope_id,
+            role_name,
+        )
+        .await
+        .map_err(|_| RejectReason::database("Failed to reach database"))?,
     };
 
     Ok(Json(RoleChangeResult { changed }))
@@ -551,8 +547,8 @@ where
         auth_user.id(),
         payload.inheritor_user_id,
     )
-        .await
-        .map_err(|_| RejectReason::database("Failed to reach database"))?;
+    .await
+    .map_err(|_| RejectReason::database("Failed to reach database"))?;
 
     let leave_log = LogRow::new(
         auth_user.id(),
