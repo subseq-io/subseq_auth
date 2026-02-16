@@ -1,22 +1,27 @@
 use std::str::FromStr;
 
 use anyhow::{Result as AnyResult, anyhow};
+use base64::{Engine as _, engine::general_purpose};
+use chrono::{DateTime, TimeZone, Utc};
 use openidconnect::core::{
     CoreAuthenticationFlow, CoreClient, CoreIdToken, CoreIdTokenClaims, CoreTokenResponse,
 };
 use openidconnect::reqwest::Error as RequestError;
 use openidconnect::{
     AccessToken, AccessTokenHash, Audience, AuthorizationCode, ClaimsVerificationError, ClientId,
-    ClientSecret, CsrfToken, EndSessionUrl, HttpRequest, HttpResponse, IssuerUrl, Nonce,
-    NonceVerifier, OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier,
+    ClientSecret, CsrfToken, EmptyAdditionalClaims, EndSessionUrl, EndUserEmail, EndUserUsername,
+    HttpRequest, HttpResponse, IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse,
+    PkceCodeChallenge, PkceCodeVerifier, StandardClaims, SubjectIdentifier,
     ProviderMetadataWithLogout, RedirectUrl, RefreshToken, Scope, SignatureVerificationError,
     SigningError, TokenResponse,
 };
 use reqwest::{Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use url::Url;
 
 use crate::rustls::get_cert_pool;
+use crate::workload::WorkloadJwtValidator;
 
 fn new_client() -> Client {
     let mut builder = Client::builder()
@@ -194,6 +199,7 @@ impl NonceVerifier for OtherPartyNonce {
 pub struct IdentityProvider {
     client: CoreClient,
     allowed_other_audiences: Option<AllowedOtherAudiencesInternal>,
+    workload_validator: WorkloadJwtValidator,
     base_url: Url,
     logout_url: EndSessionUrl,
 }
@@ -231,6 +237,11 @@ impl IdentityProvider {
         Ok(Self {
             client,
             allowed_other_audiences,
+            workload_validator: WorkloadJwtValidator::new(
+                vec![idp_url.to_string()],
+                30,
+                std::time::Duration::from_secs(600),
+            )?,
             base_url: oidc.base_url.clone(),
             logout_url,
         })
@@ -334,6 +345,24 @@ impl IdentityProvider {
         Ok((id_token.clone(), claims.clone()))
     }
 
+    pub async fn validate_bearer_async(
+        &self,
+        token: &str,
+    ) -> Result<(CoreIdToken, CoreIdTokenClaims), ClaimsVerificationError> {
+        match self.validate_bearer(token) {
+            Ok(validated) => Ok(validated),
+            Err(id_token_err) => {
+                tracing::debug!(
+                    error = ?id_token_err,
+                    "ID token bearer validation failed; attempting access token fallback"
+                );
+                self.validate_access_token_bearer(token)
+                    .await
+                    .or(Err(id_token_err))
+            }
+        }
+    }
+
     pub fn validate_token(
         &self,
         token: &OidcToken,
@@ -404,4 +433,127 @@ pub async fn provider_metadata(url: &Url) -> AnyResult<ProviderMetadataWithLogou
     let issuer = IssuerUrl::from_url(url.clone());
     let config = ProviderMetadataWithLogout::discover_async(issuer, async_http_client).await?;
     Ok(config)
+}
+
+impl IdentityProvider {
+    async fn validate_access_token_bearer(
+        &self,
+        token: &str,
+    ) -> Result<(CoreIdToken, CoreIdTokenClaims), ClaimsVerificationError> {
+        let verified = self.workload_validator.validate_authorization(token).await?;
+        let payload = decode_jwt_payload(&verified.raw)?;
+
+        let subject = verified.claims.subject.clone().or_else(|| claim_string(&payload, "sub")).ok_or_else(|| {
+            ClaimsVerificationError::Other("Access token missing subject claim".to_string())
+        })?;
+        let issue_time = claim_timestamp(&payload, "iat")?;
+        let expiration = claim_timestamp(&payload, "exp")?;
+
+        let mut audiences = verified
+            .claims
+            .audiences
+            .iter()
+            .map(|aud| Audience::new(aud.clone()))
+            .collect::<Vec<_>>();
+        if audiences.is_empty() {
+            audiences.push(Audience::new(verified.claims.client_id.clone()));
+        }
+
+        let mut standard_claims = StandardClaims::new(SubjectIdentifier::new(subject));
+        let preferred_username = claim_string(&payload, "preferred_username")
+            .or_else(|| claim_string(&payload, "username"))
+            .or_else(|| claim_string(&payload, "cognito:username"))
+            .or_else(|| claim_string(&payload, "email"));
+        if let Some(username) = preferred_username {
+            standard_claims =
+                standard_claims.set_preferred_username(Some(EndUserUsername::new(username)));
+        }
+
+        if let Some(email) = claim_string(&payload, "email") {
+            standard_claims = standard_claims.set_email(Some(EndUserEmail::new(email)));
+        }
+        if let Some(email_verified) = claim_bool(&payload, "email_verified") {
+            standard_claims = standard_claims.set_email_verified(Some(email_verified));
+        }
+
+        let issuer_url = IssuerUrl::new(verified.claims.issuer.clone()).map_err(|_| {
+            ClaimsVerificationError::Other("Access token issuer is not a valid URL".to_string())
+        })?;
+
+        let id_token = CoreIdToken::from_str(&verified.raw).map_err(|_| {
+            ClaimsVerificationError::Unsupported("Invalid bearer token format".to_string())
+        })?;
+
+        let claims = CoreIdTokenClaims::new(
+            issuer_url,
+            audiences,
+            expiration,
+            issue_time,
+            standard_claims,
+            EmptyAdditionalClaims::default(),
+        )
+        .set_authorized_party(Some(ClientId::new(verified.claims.client_id)));
+
+        Ok((id_token, claims))
+    }
+}
+
+fn decode_jwt_payload(token: &str) -> Result<Map<String, Value>, ClaimsVerificationError> {
+    let mut segments = token.split('.');
+    let _header = segments.next();
+    let payload = segments
+        .next()
+        .ok_or_else(|| ClaimsVerificationError::Other("Invalid bearer token format".to_string()))?;
+    let _signature = segments.next();
+    if segments.next().is_some() {
+        return Err(ClaimsVerificationError::Other(
+            "Invalid bearer token format".to_string(),
+        ));
+    }
+
+    let decoded = general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| general_purpose::URL_SAFE.decode(payload))
+        .map_err(|_| ClaimsVerificationError::Other("Invalid bearer token payload".to_string()))?;
+    let value: Value = serde_json::from_slice(&decoded).map_err(|_| {
+        ClaimsVerificationError::Other("Invalid bearer token payload JSON".to_string())
+    })?;
+
+    value.as_object().cloned().ok_or_else(|| {
+        ClaimsVerificationError::Other("Invalid bearer token payload JSON object".to_string())
+    })
+}
+
+fn claim_string(payload: &Map<String, Value>, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+}
+
+fn claim_bool(payload: &Map<String, Value>, key: &str) -> Option<bool> {
+    payload.get(key).and_then(|v| v.as_bool())
+}
+
+fn claim_timestamp(payload: &Map<String, Value>, key: &str) -> Result<DateTime<Utc>, ClaimsVerificationError> {
+    let value = payload.get(key).ok_or_else(|| {
+        ClaimsVerificationError::Other(format!("Missing {key} claim in bearer token"))
+    })?;
+
+    let seconds = if let Some(value) = value.as_i64() {
+        value
+    } else if let Some(value) = value.as_u64() {
+        i64::try_from(value)
+            .map_err(|_| ClaimsVerificationError::Other(format!("Invalid {key} claim")))?
+    } else {
+        return Err(ClaimsVerificationError::Other(format!(
+            "Invalid {key} claim (expected integer)"
+        )));
+    };
+
+    Utc.timestamp_opt(seconds, 0)
+        .single()
+        .ok_or_else(|| ClaimsVerificationError::Other(format!("Invalid {key} timestamp")))
 }

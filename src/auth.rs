@@ -24,7 +24,7 @@ use urlencoding::decode;
 use crate::oidc::{IdentityProvider, OidcToken};
 use crate::prelude::{
     AuthRejectReason, AuthenticatedUser, MaybeAuthenticatedUser, RejectReason, ValidatesIdentity,
-    validate_bearer,
+    validate_bearer_async,
 };
 
 pub const AUTH_COOKIE: &str = "access_token";
@@ -67,7 +67,7 @@ where
         // Get the token, preferring Bearer tokens first
         let (auth_user, token) = if let Some(bearer) = authorization.and_then(|h| h.to_str().ok()) {
             tracing::trace!("Authorization header found: {}", bearer);
-            let (token, claims) = match validate_bearer(state, bearer) {
+            let (token, claims) = match validate_bearer_async(state, bearer).await {
                 Ok(token) => {
                     tracing::trace!("Bearer token parsed successfully");
                     token

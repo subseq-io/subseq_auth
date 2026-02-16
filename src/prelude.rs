@@ -112,6 +112,14 @@ pub trait ValidatesIdentity {
         &self,
         token: &str,
     ) -> Result<(CoreIdToken, CoreIdTokenClaims), ClaimsVerificationError>;
+    fn validate_bearer_async(
+        &self,
+        token: &str,
+    ) -> impl std::future::Future<
+        Output = Result<(CoreIdToken, CoreIdTokenClaims), ClaimsVerificationError>,
+    > + std::marker::Send {
+        std::future::ready(self.validate_bearer(token))
+    }
     fn validate_token(
         &self,
         token: &OidcToken,
@@ -141,6 +149,28 @@ pub fn validate_bearer<S: ValidatesIdentity>(
         }
     } else {
         state.validate_bearer(&token)
+    }
+}
+
+pub async fn validate_bearer_async<S: ValidatesIdentity>(
+    state: &S,
+    authorization: &str,
+) -> Result<(CoreIdToken, CoreIdTokenClaims), ClaimsVerificationError> {
+    let (name, token) = match authorization.split_once(' ') {
+        Some((name, token)) => (Some(name.trim()), token.trim()),
+        None => (None, authorization.trim()),
+    };
+    tracing::trace!("Splitting Bearer token from ({:?}, {:?})", name, token);
+    if let Some(name) = name {
+        if name.eq_ignore_ascii_case("Bearer") {
+            state.validate_bearer_async(&token).await
+        } else {
+            Err(ClaimsVerificationError::Other(
+                "Invalid authorization scheme".to_string(),
+            ))
+        }
+    } else {
+        state.validate_bearer_async(&token).await
     }
 }
 
