@@ -5,6 +5,7 @@ use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, TimeZone, Utc};
 use openidconnect::core::{
     CoreAuthenticationFlow, CoreClient, CoreIdToken, CoreIdTokenClaims, CoreTokenResponse,
+    CoreUserInfoClaims,
 };
 use openidconnect::reqwest::Error as RequestError;
 use openidconnect::{
@@ -460,19 +461,47 @@ impl IdentityProvider {
         }
 
         let mut standard_claims = StandardClaims::new(SubjectIdentifier::new(subject));
-        let preferred_username = claim_string(&payload, "preferred_username")
+        let mut preferred_username = claim_string(&payload, "preferred_username")
             .or_else(|| claim_string(&payload, "username"))
             .or_else(|| claim_string(&payload, "cognito:username"))
             .or_else(|| claim_string(&payload, "email"));
+        let mut email = claim_string(&payload, "email");
+        let mut email_verified = claim_bool(&payload, "email_verified");
+
+        if preferred_username.is_none() || email.is_none() {
+            if let Ok(user_info_request) = self.client.user_info(
+                AccessToken::new(verified.raw.clone()),
+                Some(SubjectIdentifier::new(
+                    standard_claims.subject().as_str().to_string(),
+                )),
+            ) {
+                let user_info_result: Result<CoreUserInfoClaims, _> =
+                    user_info_request.request_async(async_http_client).await;
+                if let Ok(user_info) = user_info_result {
+                    if preferred_username.is_none() {
+                        preferred_username = user_info
+                            .preferred_username()
+                            .map(|value| value.as_str().to_string())
+                            .or_else(|| user_info.email().map(|value| value.as_str().to_string()));
+                    }
+                    if email.is_none() {
+                        email = user_info.email().map(|value| value.as_str().to_string());
+                    }
+                    if email_verified.is_none() {
+                        email_verified = user_info.email_verified();
+                    }
+                }
+            }
+        }
+
         if let Some(username) = preferred_username {
             standard_claims =
                 standard_claims.set_preferred_username(Some(EndUserUsername::new(username)));
         }
-
-        if let Some(email) = claim_string(&payload, "email") {
+        if let Some(email) = email {
             standard_claims = standard_claims.set_email(Some(EndUserEmail::new(email)));
         }
-        if let Some(email_verified) = claim_bool(&payload, "email_verified") {
+        if let Some(email_verified) = email_verified {
             standard_claims = standard_claims.set_email_verified(Some(email_verified));
         }
 
