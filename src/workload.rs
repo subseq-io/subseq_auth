@@ -158,12 +158,17 @@ fn resolve_audiences(payload: &Map<String, Value>) -> Result<Vec<String>, Claims
 }
 
 fn jwks_url_for_issuer(issuer: &str) -> Result<Url, ClaimsVerificationError> {
-    let issuer_url = Url::parse(issuer).map_err(|_| {
+    let mut issuer_url = Url::parse(issuer).map_err(|_| {
         ClaimsVerificationError::Other("Invalid issuer URL in token claims".to_string())
     })?;
-    issuer_url.join("/.well-known/jwks.json").map_err(|_| {
-        ClaimsVerificationError::Other("Failed to construct issuer jwks url".to_string())
-    })
+    {
+        let mut segments = issuer_url.path_segments_mut().map_err(|_| {
+            ClaimsVerificationError::Other("Failed to construct issuer jwks url".to_string())
+        })?;
+        segments.push(".well-known");
+        segments.push("jwks.json");
+    }
+    Ok(issuer_url)
 }
 
 #[derive(Clone)]
@@ -381,7 +386,9 @@ mod tests {
     use serde::Serialize;
     use tokio::net::TcpListener;
 
-    use super::{WorkloadJwtValidator, resolve_client_id, unverified_jwt_payload};
+    use super::{
+        WorkloadJwtValidator, jwks_url_for_issuer, resolve_client_id, unverified_jwt_payload,
+    };
 
     static PRIVATE_KEY: Lazy<RsaPrivateKey> = Lazy::new(|| {
         let mut rng = OsRng;
@@ -551,6 +558,16 @@ mod tests {
         assert!(validator.validate_authorization(&authz).await.is_err());
 
         server.abort();
+    }
+
+    #[test]
+    fn jwks_url_preserves_issuer_path_segments() {
+        let issuer = "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_example";
+        let jwks_url = jwks_url_for_issuer(issuer).expect("jwks url");
+        assert_eq!(
+            jwks_url.as_str(),
+            "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_example/.well-known/jwks.json"
+        );
     }
 
     #[test]
