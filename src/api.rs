@@ -1,23 +1,29 @@
 use std::sync::Arc;
 
 use crate::prelude::{AuthenticatedUser, GroupId, RejectReason, UserId, ValidatesIdentity};
+use anyhow::Context;
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_extra::extract::CookieJar as AxumCookieJar;
 use cookie::SameSite;
 use hyper::StatusCode;
+use openidconnect::ClaimsVerificationError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::Duration;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
+use crate::auth::auth_cookie;
 use crate::db::{
     AccessRoleRow, GLOBAL_SCOPE, GLOBAL_SCOPE_ID, GroupMembershipRow, GroupRoleRow, GroupRow,
     LogRow, RoleAssignmentTarget, SUPER_ADMIN_ROLE, UserRoleRow, UserRow,
     can_manage_role_assignment, grant_role_assignment_with_audit, is_super_admin,
     revoke_role_assignment_with_audit, user_is_group_admin_for_scope,
 };
+use crate::oidc::OidcToken;
+use crate::prelude::AuthRejectReason;
 
 /// Provides access to the database connection pool.
 pub trait HasPool {
@@ -57,6 +63,57 @@ impl From<UserRow> for User {
             details: row.details,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSyncContent {
+    pub id_token: String,
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub nonce: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSyncResponse {
+    pub has_refresh_token: bool,
+}
+
+pub async fn session_sync_handler<S>(
+    app: State<S>,
+    jar: AxumCookieJar,
+    Json(payload): Json<SessionSyncContent>,
+) -> Result<(AxumCookieJar, Json<SessionSyncResponse>), RejectReason>
+where
+    S: AuthApp + Clone + Send + Sync + 'static,
+{
+    let token = OidcToken::from_raw_parts(
+        payload.id_token,
+        payload.access_token,
+        payload.refresh_token,
+        payload.nonce,
+    )
+    .map_err(|err| RejectReason::bad_request(err.to_string()))?;
+
+    let token = match app.validate_token(&token) {
+        Ok(_) => token,
+        Err(ClaimsVerificationError::Expired(_)) => app
+            .refresh_token(token)
+            .await
+            .context("token refresh")
+            .map_err(|_| RejectReason::auth(AuthRejectReason::invalid_credentials()))?,
+        Err(_) => return Err(RejectReason::auth(AuthRejectReason::invalid_credentials())),
+    };
+
+    app.validate_token(&token)
+        .map_err(|_| RejectReason::auth(AuthRejectReason::invalid_credentials()))?;
+
+    let has_refresh_token = token.has_refresh_token();
+    Ok((
+        jar.add(auth_cookie(token)),
+        Json(SessionSyncResponse { has_refresh_token }),
+    ))
 }
 
 /// Handler to get or create the authenticated user's record.
@@ -593,6 +650,7 @@ where
     tracing::info!("Registering route /auth/roles [GET]");
     tracing::info!("Registering route /auth/roles/grant [POST]");
     tracing::info!("Registering route /auth/roles/revoke [POST]");
+    tracing::info!("Registering route /auth/session/sync [POST]");
     let layer = SessionManagerLayer::new(store)
         .with_secure(false)
         .with_same_site(SameSite::Lax) // Ensure we send the cookie from the OAuth redirect.
@@ -609,5 +667,6 @@ where
         .route("/auth/roles", get(roles_handler::<S>))
         .route("/auth/roles/grant", post(role_grant_handler::<S>))
         .route("/auth/roles/revoke", post(role_revoke_handler::<S>))
+        .route("/auth/session/sync", post(session_sync_handler::<S>))
         .layer(layer)
 }

@@ -64,27 +64,35 @@ where
     ) -> Option<AuthenticatedUser> {
         tracing::trace!("Authorizing request");
 
-        // Get the token, preferring Bearer tokens first
-        let (auth_user, token) = if let Some(bearer) = authorization.and_then(|h| h.to_str().ok()) {
+        // Prefer Bearer auth, but fall back to cookie-backed session auth on bearer failure.
+        let bearer_result = if let Some(bearer) = authorization.and_then(|h| h.to_str().ok()) {
             tracing::trace!("Authorization header found: {}", bearer);
-            let (token, claims) = match validate_bearer_async(state, bearer).await {
-                Ok(token) => {
+            match validate_bearer_async(state, bearer).await {
+                Ok((token, claims)) => {
                     tracing::trace!("Bearer token parsed successfully");
-                    token
+                    let auth_user = AuthenticatedUser::from_claims(token, claims)
+                        .await
+                        .map_err(|err| {
+                            tracing::warn!("Failed to create authenticated user: {}", err);
+                            err
+                        })
+                        .ok()?;
+                    Some((auth_user, None))
                 }
                 Err(err) => {
-                    tracing::warn!("Failed to parse bearer token: {}", err);
-                    return None;
+                    tracing::warn!(
+                        "Failed to parse bearer token: {}. Falling back to cookie session validation.",
+                        err
+                    );
+                    None
                 }
-            };
-            let auth_user = AuthenticatedUser::from_claims(token, claims)
-                .await
-                .map_err(|err| {
-                    tracing::warn!("Failed to create authenticated user: {}", err);
-                    err
-                })
-                .ok()?;
-            (auth_user, None)
+            }
+        } else {
+            None
+        };
+
+        let (auth_user, token) = if let Some(result) = bearer_result {
+            result
         } else {
             let auth_cookie = cookies.get(AUTH_COOKIE);
             if let Some(auth_cookie) = auth_cookie {
@@ -311,7 +319,7 @@ pub async fn auth(
     ))
 }
 
-fn auth_cookie<'a>(token: OidcToken) -> Cookie<'a> {
+pub(crate) fn auth_cookie<'a>(token: OidcToken) -> Cookie<'a> {
     Cookie::build((
         AUTH_COOKIE,
         serde_json::to_string(&token).expect("serialize token"),

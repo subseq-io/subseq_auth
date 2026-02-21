@@ -12,9 +12,9 @@ use openidconnect::{
     AccessToken, AccessTokenHash, Audience, AuthorizationCode, ClaimsVerificationError, ClientId,
     ClientSecret, CsrfToken, EmptyAdditionalClaims, EndSessionUrl, EndUserEmail, EndUserUsername,
     HttpRequest, HttpResponse, IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse,
-    PkceCodeChallenge, PkceCodeVerifier, StandardClaims, SubjectIdentifier,
-    ProviderMetadataWithLogout, RedirectUrl, RefreshToken, Scope, SignatureVerificationError,
-    SigningError, TokenResponse,
+    PkceCodeChallenge, PkceCodeVerifier, ProviderMetadataWithLogout, RedirectUrl, RefreshToken,
+    Scope, SignatureVerificationError, SigningError, StandardClaims, SubjectIdentifier,
+    TokenResponse,
 };
 use reqwest::{Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
@@ -72,8 +72,10 @@ pub async fn async_http_client(
 pub struct OidcToken {
     id_token: CoreIdToken,
     access_token: AccessToken,
+    #[serde(default)]
     refresh_token: Option<RefreshToken>,
-    nonce: Nonce,
+    #[serde(default)]
+    nonce: Option<Nonce>,
 }
 
 impl PartialEq for OidcToken {
@@ -99,17 +101,54 @@ impl OidcToken {
                 .ok_or_else(|| anyhow!("Server did not provide ID token!"))?,
             access_token: token.access_token().clone(),
             refresh_token: token.refresh_token().cloned(),
-            nonce,
+            nonce: Some(nonce),
         })
     }
 
     pub fn refresh(self, token: CoreTokenResponse) -> Option<Self> {
+        let refresh_token = token
+            .refresh_token()
+            .cloned()
+            .or_else(|| self.refresh_token.clone());
         Some(Self {
             id_token: token.id_token().cloned()?,
             access_token: token.access_token().clone(),
-            refresh_token: token.refresh_token().cloned(),
+            refresh_token,
             nonce: self.nonce,
         })
+    }
+
+    pub fn from_raw_parts(
+        id_token: String,
+        access_token: String,
+        refresh_token: Option<String>,
+        nonce: Option<String>,
+    ) -> AnyResult<Self> {
+        let id_token =
+            CoreIdToken::from_str(id_token.trim()).map_err(|_| anyhow!("Invalid id token"))?;
+        let access_token = access_token.trim();
+        if access_token.is_empty() {
+            anyhow::bail!("Invalid access token");
+        }
+        let access_token = AccessToken::new(access_token.to_string());
+        let refresh_token = refresh_token
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(RefreshToken::new);
+        let nonce = nonce
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(Nonce::new);
+        Ok(Self {
+            id_token,
+            access_token,
+            refresh_token,
+            nonce,
+        })
+    }
+
+    pub fn has_refresh_token(&self) -> bool {
+        self.refresh_token.is_some()
     }
 
     pub fn from_bearer(tok: &str) -> Option<Self> {
@@ -119,14 +158,14 @@ impl OidcToken {
                 id_token: CoreIdToken::from_str(parts[0]).ok()?,
                 access_token: AccessToken::new(parts[1].to_string()),
                 refresh_token: None,
-                nonce: Nonce::new(parts[2].to_string()),
+                nonce: Some(Nonce::new(parts[2].to_string())),
             })
         } else if parts.len() == 4 {
             Some(OidcToken {
                 id_token: CoreIdToken::from_str(parts[0]).ok()?,
                 access_token: AccessToken::new(parts[1].to_string()),
                 refresh_token: Some(RefreshToken::new(parts[2].to_string())),
-                nonce: Nonce::new(parts[3].to_string()),
+                nonce: Some(Nonce::new(parts[3].to_string())),
             })
         } else {
             None
@@ -385,7 +424,11 @@ impl IdentityProvider {
             });
         let id_token = &token.id_token;
         tracing::trace!("claims");
-        let claims = id_token.claims(&verifier, &token.nonce)?;
+        let claims = if let Some(nonce) = token.nonce.as_ref() {
+            id_token.claims(&verifier, nonce)?
+        } else {
+            id_token.claims(&verifier, OtherPartyNonce)?
+        };
         tracing::trace!("after claims");
 
         if let Some(expected_access_token_hash) = claims.access_token_hash() {
@@ -441,12 +484,20 @@ impl IdentityProvider {
         &self,
         token: &str,
     ) -> Result<(CoreIdToken, CoreIdTokenClaims), ClaimsVerificationError> {
-        let verified = self.workload_validator.validate_authorization(token).await?;
+        let verified = self
+            .workload_validator
+            .validate_authorization(token)
+            .await?;
         let payload = decode_jwt_payload(&verified.raw)?;
 
-        let subject = verified.claims.subject.clone().or_else(|| claim_string(&payload, "sub")).ok_or_else(|| {
-            ClaimsVerificationError::Other("Access token missing subject claim".to_string())
-        })?;
+        let subject = verified
+            .claims
+            .subject
+            .clone()
+            .or_else(|| claim_string(&payload, "sub"))
+            .ok_or_else(|| {
+                ClaimsVerificationError::Other("Access token missing subject claim".to_string())
+            })?;
         let issue_time = claim_timestamp(&payload, "iat")?;
         let expiration = claim_timestamp(&payload, "exp")?;
 
@@ -566,7 +617,10 @@ fn claim_bool(payload: &Map<String, Value>, key: &str) -> Option<bool> {
     payload.get(key).and_then(|v| v.as_bool())
 }
 
-fn claim_timestamp(payload: &Map<String, Value>, key: &str) -> Result<DateTime<Utc>, ClaimsVerificationError> {
+fn claim_timestamp(
+    payload: &Map<String, Value>,
+    key: &str,
+) -> Result<DateTime<Utc>, ClaimsVerificationError> {
     let value = payload.get(key).ok_or_else(|| {
         ClaimsVerificationError::Other(format!("Missing {key} claim in bearer token"))
     })?;

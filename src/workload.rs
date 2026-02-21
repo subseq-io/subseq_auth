@@ -77,7 +77,9 @@ fn unverified_jwt_payload(token: &str) -> Result<Map<String, Value>, ClaimsVerif
         .ok_or_else(|| ClaimsVerificationError::Other("Invalid JWT format".to_string()))?;
     let _signature = segments.next();
     if segments.next().is_some() {
-        return Err(ClaimsVerificationError::Other("Invalid JWT format".to_string()));
+        return Err(ClaimsVerificationError::Other(
+            "Invalid JWT format".to_string(),
+        ));
     }
 
     let decoded = general_purpose::URL_SAFE_NO_PAD
@@ -93,7 +95,9 @@ fn unverified_jwt_payload(token: &str) -> Result<Map<String, Value>, ClaimsVerif
     })
 }
 
-fn jwt_issuer_from_payload(payload: &Map<String, Value>) -> Result<String, ClaimsVerificationError> {
+fn jwt_issuer_from_payload(
+    payload: &Map<String, Value>,
+) -> Result<String, ClaimsVerificationError> {
     payload
         .get("iss")
         .and_then(|v| v.as_str())
@@ -219,12 +223,9 @@ impl WorkloadJwtValidator {
 
     async fn fetch_jwks(&self, issuer: &str) -> Result<JwkSet, ClaimsVerificationError> {
         let jwks_url = jwks_url_for_issuer(issuer)?;
-        let response = self
-            .http
-            .get(jwks_url)
-            .send()
-            .await
-            .map_err(|_| ClaimsVerificationError::Other("Failed to fetch issuer jwks".to_string()))?;
+        let response = self.http.get(jwks_url).send().await.map_err(|_| {
+            ClaimsVerificationError::Other("Failed to fetch issuer jwks".to_string())
+        })?;
 
         if !response.status().is_success() {
             return Err(ClaimsVerificationError::Other(format!(
@@ -317,9 +318,8 @@ impl WorkloadJwtValidator {
         validation.set_issuer(&[issuer.as_str()]);
         validation.leeway = self.clock_skew.as_secs();
 
-        let data = decode::<Map<String, Value>>(token, &decoding_key, &validation).map_err(|_| {
-            ClaimsVerificationError::Other("Token verification failed".to_string())
-        })?;
+        let data = decode::<Map<String, Value>>(token, &decoding_key, &validation)
+            .map_err(|_| ClaimsVerificationError::Other("Token verification failed".to_string()))?;
 
         if let Some(token_use) = data
             .claims
@@ -335,9 +335,8 @@ impl WorkloadJwtValidator {
             }
         }
 
-        let client_id = resolve_client_id(&data.claims).ok_or_else(|| {
-            ClaimsVerificationError::Other("Missing client_id claim".to_string())
-        })?;
+        let client_id = resolve_client_id(&data.claims)
+            .ok_or_else(|| ClaimsVerificationError::Other("Missing client_id claim".to_string()))?;
         let subject = resolve_subject(&data.claims);
         let audiences = resolve_audiences(&data.claims)?;
 
@@ -374,8 +373,8 @@ mod tests {
     use std::net::SocketAddr;
     use std::time::Duration;
 
-    use axum::{Router, routing::get};
     use axum::response::IntoResponse;
+    use axum::{Router, routing::get};
     use base64::Engine as _;
     use jsonwebtoken::{EncodingKey, Header, encode};
     use once_cell::sync::Lazy;
@@ -457,13 +456,13 @@ mod tests {
             .expect("validator");
 
         let token = encode_token(Claims {
-                iss: &issuer,
-                sub: "service-subject",
-                exp: (chrono::Utc::now().timestamp() + 60) as usize,
-                token_use: "access",
-                client_id: Some("client-123"),
-                azp: None,
-            });
+            iss: &issuer,
+            sub: "service-subject",
+            exp: (chrono::Utc::now().timestamp() + 60) as usize,
+            token_use: "access",
+            client_id: Some("client-123"),
+            azp: None,
+        });
 
         let authz = format!("Bearer {token}");
         let verified = validator.validate_authorization(&authz).await.unwrap();
@@ -481,13 +480,13 @@ mod tests {
             .expect("validator");
 
         let token = encode_token(Claims {
-                iss: &issuer,
-                sub: "service-subject",
-                exp: (chrono::Utc::now().timestamp() + 60) as usize,
-                token_use: "access",
-                client_id: None,
-                azp: Some("azp-123"),
-            });
+            iss: &issuer,
+            sub: "service-subject",
+            exp: (chrono::Utc::now().timestamp() + 60) as usize,
+            token_use: "access",
+            client_id: None,
+            azp: Some("azp-123"),
+        });
 
         let authz = format!("Bearer {token}");
         let verified = validator.validate_authorization(&authz).await.unwrap();
@@ -503,13 +502,13 @@ mod tests {
             .expect("validator");
 
         let token = encode_token(Claims {
-                iss: &issuer,
-                sub: "service-subject",
-                exp: (chrono::Utc::now().timestamp() + 60) as usize,
-                token_use: "access",
-                client_id: None,
-                azp: None,
-            });
+            iss: &issuer,
+            sub: "service-subject",
+            exp: (chrono::Utc::now().timestamp() + 60) as usize,
+            token_use: "access",
+            client_id: None,
+            azp: None,
+        });
 
         let authz = format!("Bearer {token}");
         assert!(validator.validate_authorization(&authz).await.is_err());
@@ -525,13 +524,13 @@ mod tests {
 
         let wrong_issuer = "http://example.invalid";
         let token = encode_token(Claims {
-                iss: wrong_issuer,
-                sub: "service-subject",
-                exp: (chrono::Utc::now().timestamp() + 60) as usize,
-                token_use: "access",
-                client_id: Some("client-123"),
-                azp: None,
-            });
+            iss: wrong_issuer,
+            sub: "service-subject",
+            exp: (chrono::Utc::now().timestamp() + 60) as usize,
+            token_use: "access",
+            client_id: Some("client-123"),
+            azp: None,
+        });
 
         let authz = format!("Bearer {token}");
         assert!(validator.validate_authorization(&authz).await.is_err());
@@ -546,13 +545,13 @@ mod tests {
             .expect("validator");
 
         let token = encode_token(Claims {
-                iss: &issuer,
-                sub: "service-subject",
-                exp: (chrono::Utc::now().timestamp() - 10) as usize,
-                token_use: "access",
-                client_id: Some("client-123"),
-                azp: None,
-            });
+            iss: &issuer,
+            sub: "service-subject",
+            exp: (chrono::Utc::now().timestamp() - 10) as usize,
+            token_use: "access",
+            client_id: Some("client-123"),
+            azp: None,
+        });
 
         let authz = format!("Bearer {token}");
         assert!(validator.validate_authorization(&authz).await.is_err());
