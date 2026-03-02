@@ -683,3 +683,185 @@ where
         .route("/auth/session/sync", post(session_sync_handler::<S>))
         .layer(layer)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use axum::http::Uri;
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn fixture_user_uuid() -> Uuid {
+        Uuid::from_str("a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8").expect("fixture uuid should parse")
+    }
+
+    fn fixture_group_uuid() -> Uuid {
+        Uuid::from_str("b1b2b3b4-c1c2-d1d2-e1e2-f3f4f5f6f7f8").expect("fixture uuid should parse")
+    }
+
+    fn typed_user_id(uuid: Uuid) -> String {
+        format!("user_{}", uuid.simple())
+    }
+
+    fn typed_group_id(uuid: Uuid) -> String {
+        format!("group_{}", uuid.simple())
+    }
+
+    fn parse_roles_query(uri: &str) -> RolesQuery {
+        let uri: Uri = uri.parse().expect("uri should parse");
+        Query::<RolesQuery>::try_from_uri(&uri)
+            .expect("query should deserialize")
+            .0
+    }
+
+    #[test]
+    fn role_target_content_user_accepts_typed_and_untyped_user_id() {
+        let user_uuid = fixture_user_uuid();
+
+        for user_id in [typed_user_id(user_uuid), user_uuid.to_string()] {
+            let target: RoleTargetContent = serde_json::from_value(json!({
+                "target_type": "user",
+                "user_id": user_id,
+            }))
+            .expect("role target should deserialize");
+
+            assert_eq!(target.target_user_id(), Some(UserId(user_uuid)));
+            match target.assignment_target() {
+                RoleAssignmentTarget::User(parsed) => assert_eq!(parsed, UserId(user_uuid)),
+                RoleAssignmentTarget::Group(_) => {
+                    panic!("user payload should deserialize as user target")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn role_target_content_group_accepts_typed_and_untyped_group_id() {
+        let group_uuid = fixture_group_uuid();
+
+        for group_id in [typed_group_id(group_uuid), group_uuid.to_string()] {
+            let target: RoleTargetContent = serde_json::from_value(json!({
+                "target_type": "group",
+                "group_id": group_id,
+            }))
+            .expect("role target should deserialize");
+
+            assert_eq!(target.target_user_id(), None);
+            match target.assignment_target() {
+                RoleAssignmentTarget::Group(parsed) => assert_eq!(parsed, GroupId(group_uuid)),
+                RoleAssignmentTarget::User(_) => {
+                    panic!("group payload should deserialize as group target")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn role_target_content_rejects_mismatched_typed_prefix() {
+        let user_uuid = fixture_user_uuid();
+
+        let result = serde_json::from_value::<RoleTargetContent>(json!({
+            "target_type": "user",
+            "user_id": typed_group_id(user_uuid),
+        }));
+
+        assert!(
+            result.is_err(),
+            "user target should reject group-prefixed typed ids"
+        );
+    }
+
+    #[test]
+    fn role_change_content_accepts_typed_and_untyped_target_ids() {
+        let group_uuid = fixture_group_uuid();
+
+        for group_id in [typed_group_id(group_uuid), group_uuid.to_string()] {
+            let payload = serde_json::from_value::<RoleChangeContent>(json!({
+                "target_type": "group",
+                "group_id": group_id,
+                "scope": "organization",
+                "scope_id": "org_123",
+                "role_name": "billing_admin",
+            }))
+            .expect("role change payload should deserialize");
+
+            assert_eq!(payload.scope, "organization");
+            assert_eq!(payload.scope_id, "org_123");
+            assert_eq!(payload.role_name, "billing_admin");
+            match payload.target.assignment_target() {
+                RoleAssignmentTarget::Group(parsed) => assert_eq!(parsed, GroupId(group_uuid)),
+                RoleAssignmentTarget::User(_) => {
+                    panic!("group payload should deserialize as group target")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn roles_query_accepts_typed_and_untyped_user_id() {
+        let user_uuid = fixture_user_uuid();
+
+        for user_id in [typed_user_id(user_uuid), user_uuid.to_string()] {
+            let query = parse_roles_query(&format!(
+                "/auth/roles?target_type=user&user_id={user_id}&scope=project&scope_id=p_123"
+            ));
+
+            assert_eq!(query.user_id.expect("user id should exist").uuid, user_uuid);
+            assert!(query.group_id.is_none());
+            assert_eq!(query.target_type.as_deref(), Some("user"));
+            assert_eq!(query.scope.as_deref(), Some("project"));
+            assert_eq!(query.scope_id.as_deref(), Some("p_123"));
+        }
+    }
+
+    #[test]
+    fn roles_query_accepts_typed_and_untyped_group_id() {
+        let group_uuid = fixture_group_uuid();
+
+        for group_id in [typed_group_id(group_uuid), group_uuid.to_string()] {
+            let query = parse_roles_query(&format!(
+                "/auth/roles?target_type=group&group_id={group_id}&scope=group&scope_id=grp_123"
+            ));
+
+            assert_eq!(
+                query.group_id.expect("group id should exist").uuid,
+                group_uuid
+            );
+            assert!(query.user_id.is_none());
+            assert_eq!(query.target_type.as_deref(), Some("group"));
+            assert_eq!(query.scope.as_deref(), Some("group"));
+            assert_eq!(query.scope_id.as_deref(), Some("grp_123"));
+        }
+    }
+
+    #[test]
+    fn leave_group_content_accepts_typed_and_untyped_ids() {
+        let group_uuid = fixture_group_uuid();
+        let inheritor_user_uuid = fixture_user_uuid();
+
+        for payload in [
+            json!({
+                "group_id": typed_group_id(group_uuid),
+                "inheritor_user_id": typed_user_id(inheritor_user_uuid),
+            }),
+            json!({
+                "group_id": group_uuid.to_string(),
+                "inheritor_user_id": inheritor_user_uuid.to_string(),
+            }),
+        ] {
+            let content = serde_json::from_value::<LeaveGroupContent>(payload)
+                .expect("leave-group payload should deserialize");
+
+            assert_eq!(
+                GroupId::from_typed_uuid(content.group_id),
+                GroupId(group_uuid)
+            );
+            assert_eq!(
+                content.inheritor_user_id.map(UserId::from_typed_uuid),
+                Some(UserId(inheritor_user_uuid))
+            );
+        }
+    }
+}
