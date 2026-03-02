@@ -2627,6 +2627,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "subseq_util",
  "time",
  "tokio",
  "tower",
@@ -2634,6 +2635,17 @@ dependencies = [
  "tracing",
  "url",
  "urlencoding",
+ "uuid",
+]
+
+[[package]]
+name = "subseq_util"
+version = "0.8.0"
+source = "git+https://github.com/subseq-io/subseq_util.git?branch=main#a9073bb0cee17c2b5916ac9ec2c81a64606dcebb"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
  "uuid",
 ]
 
