@@ -4,8 +4,7 @@ use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-use crate::group_id::GroupId;
-use crate::user_id::UserId;
+use crate::ids::{GroupId, UserId};
 
 pub static MIGRATOR: Lazy<Migrator> = Lazy::new(|| {
     let mut m = sqlx::migrate!("./migrations");

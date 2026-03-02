@@ -2641,7 +2641,7 @@ dependencies = [
 [[package]]
 name = "subseq_util"
 version = "0.8.0"
-source = "git+https://github.com/subseq-io/subseq_util.git?branch=main#976dd4225130a29303a9c5c7a885640ea268b50b"
+source = "git+https://github.com/subseq-io/subseq_util.git?branch=main#b9c3b2e80672a38531b67c264c3da97668f263e6"
 dependencies = [
  "axum",
  "serde",

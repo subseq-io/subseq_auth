@@ -13,9 +13,8 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-pub use crate::group_id::GroupId;
+pub use crate::ids::{GroupId, UserId};
 pub use crate::oidc::OidcToken;
-pub use crate::user_id::UserId;
 
 #[derive(Debug, Serialize)]
 #[non_exhaustive]
