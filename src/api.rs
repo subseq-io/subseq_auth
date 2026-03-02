@@ -12,6 +12,7 @@ use hyper::StatusCode;
 use openidconnect::ClaimsVerificationError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use subseq_util::prelude::*;
 use time::Duration;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
@@ -257,21 +258,23 @@ where
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "target_type", rename_all = "snake_case")]
 pub enum RoleTargetContent {
-    User { user_id: UserId },
-    Group { group_id: GroupId },
+    User { user_id: TypedUuid<UserId> },
+    Group { group_id: TypedUuid<GroupId> },
 }
 
 impl RoleTargetContent {
     fn assignment_target(&self) -> RoleAssignmentTarget {
         match self {
-            Self::User { user_id } => RoleAssignmentTarget::User(*user_id),
-            Self::Group { group_id } => RoleAssignmentTarget::Group(*group_id),
+            Self::User { user_id } => RoleAssignmentTarget::User(UserId::from_typed_uuid(*user_id)),
+            Self::Group { group_id } => {
+                RoleAssignmentTarget::Group(GroupId::from_typed_uuid(*group_id))
+            }
         }
     }
 
     fn target_user_id(&self) -> Option<UserId> {
         match self {
-            Self::User { user_id } => Some(*user_id),
+            Self::User { user_id } => Some(UserId::from_typed_uuid(*user_id)),
             Self::Group { .. } => None,
         }
     }
@@ -308,8 +311,8 @@ pub struct RolesResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RolesQuery {
     pub target_type: Option<String>,
-    pub user_id: Option<UserId>,
-    pub group_id: Option<GroupId>,
+    pub user_id: Option<TypedUuid<UserId>>,
+    pub group_id: Option<TypedUuid<GroupId>>,
     pub scope: Option<String>,
     pub scope_id: Option<String>,
 }
@@ -450,7 +453,10 @@ where
                 ));
             }
 
-            let user_id = query.user_id.unwrap_or(actor_user_id);
+            let user_id = query
+                .user_id
+                .map(UserId::from_typed_uuid)
+                .unwrap_or(actor_user_id);
             if user_id != actor_user_id && !actor_is_super_admin {
                 return Err(RejectReason::forbidden(
                     actor_user_id,
@@ -492,6 +498,7 @@ where
             let group_id = query
                 .group_id
                 .ok_or_else(|| RejectReason::bad_request("group_id is required for group roles"))?;
+            let group_id = GroupId::from_typed_uuid(group_id);
 
             let actor_is_group_admin = if actor_is_super_admin {
                 true
@@ -557,8 +564,8 @@ where
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LeaveGroupContent {
-    pub group_id: GroupId,
-    pub inheritor_user_id: Option<UserId>,
+    pub group_id: TypedUuid<GroupId>,
+    pub inheritor_user_id: Option<TypedUuid<UserId>>,
 }
 
 /// Allow the user to leave a group they are a member of.
@@ -574,16 +581,22 @@ where
     S: AuthApp + Clone + Send + Sync + 'static,
 {
     let pool = app.pool();
-    if payload.inheritor_user_id == Some(auth_user.id()) {
+    let LeaveGroupContent {
+        group_id,
+        inheritor_user_id,
+    } = payload;
+    let group_id = GroupId::from_typed_uuid(group_id);
+    let inheritor_user_id = inheritor_user_id.map(UserId::from_typed_uuid);
+
+    if inheritor_user_id == Some(auth_user.id()) {
         return Err(RejectReason::bad_request(
             "inheritor_user_id cannot be the same as the user leaving the group",
         ));
     }
-    if let Some(inheritor_user_id) = payload.inheritor_user_id {
-        let inheritor_is_member =
-            GroupMembershipRow::is_member(&pool, payload.group_id, inheritor_user_id)
-                .await
-                .map_err(|_| RejectReason::database("Failed to reach database"))?;
+    if let Some(inheritor_user_id) = inheritor_user_id {
+        let inheritor_is_member = GroupMembershipRow::is_member(&pool, group_id, inheritor_user_id)
+            .await
+            .map_err(|_| RejectReason::database("Failed to reach database"))?;
         if !inheritor_is_member {
             return Err(RejectReason::bad_request(
                 "inheritor_user_id must be an existing group member",
@@ -591,7 +604,7 @@ where
         }
     }
 
-    let was_member = GroupMembershipRow::is_member(&pool, payload.group_id, auth_user.id())
+    let was_member = GroupMembershipRow::is_member(&pool, group_id, auth_user.id())
         .await
         .map_err(|_| RejectReason::database("Failed to reach database"))?;
     if !was_member {
@@ -600,9 +613,9 @@ where
 
     let inherited_admin = GroupMembershipRow::remove_member_with_inheritance(
         &pool,
-        payload.group_id,
+        group_id,
         auth_user.id(),
-        payload.inheritor_user_id,
+        inheritor_user_id,
     )
     .await
     .map_err(|_| RejectReason::database("Failed to reach database"))?;
@@ -611,7 +624,7 @@ where
         auth_user.id(),
         json!({
             "type": "group_leave",
-            "group_id": payload.group_id.to_string(),
+            "group_id": group_id.to_string(),
             "user_id": auth_user.id().to_string(),
         }),
     );
@@ -624,7 +637,7 @@ where
             auth_user.id(),
             json!({
                 "type": "group_admin_inherited",
-                "group_id": payload.group_id.to_string(),
+                "group_id": group_id.to_string(),
                 "from_user_id": auth_user.id().to_string(),
                 "to_user_id": inherited_admin_user_id.to_string(),
             }),
@@ -634,7 +647,7 @@ where
             .map_err(|_| RejectReason::database("Failed to reach database"))?;
     }
 
-    app.announce_user_group_leave(auth_user.id(), payload.group_id);
+    app.announce_user_group_leave(auth_user.id(), group_id);
     Ok(StatusCode::NO_CONTENT)
 }
 

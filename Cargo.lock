@@ -603,7 +603,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1978,7 +1978,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2641,7 +2641,7 @@ dependencies = [
 [[package]]
 name = "subseq_util"
 version = "0.8.0"
-source = "git+https://github.com/subseq-io/subseq_util.git?branch=main#a9073bb0cee17c2b5916ac9ec2c81a64606dcebb"
+source = "git+https://github.com/subseq-io/subseq_util.git?branch=main#976dd4225130a29303a9c5c7a885640ea268b50b"
 dependencies = [
  "axum",
  "serde",
@@ -2720,7 +2720,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
